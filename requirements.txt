@@ -1,0 +1,5 @@
+gradio
+langchain
+langchain-community
+ollama
+# python-dotenv # Раскомментируйте, если используете .env файлы для конфигурации
