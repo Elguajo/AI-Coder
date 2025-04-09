@@ -1,252 +1,455 @@
-import gradio as gr
-from langchain_community.chat_models import ChatOllama
-from langchain.memory import ConversationBufferWindowMemory
-from langchain.prompts import ChatPromptTemplate, SystemMessagePromptTemplate, HumanMessagePromptTemplate, MessagesPlaceholder
-from langchain.chains import LLMChain
+"""
+Веб-интерфейс для чат-бота на базе Gradio
+"""
+
 import os
-import time # Для имитации "печати"
+import re
+import gradio as gr
+from code_enabled_chatbot import CodeEnabledChatBot
+import config
 
-# --- 1. Настройка LangChain ---
-
-# Убедитесь, что Ollama запущена с моделью deepseek-coder
-# Замените 'deepseek-coder' на имя вашей модели, если оно другое
-LLM_MODEL = "deepseek-coder" 
-try:
-    llm = ChatOllama(model=LLM_MODEL)
-    # Пробный вызов для проверки доступности модели
-    llm.invoke("Hello!") 
-    print(f"Модель '{LLM_MODEL}' успешно загружена через Ollama.")
-except Exception as e:
-    print(f"Ошибка при инициализации модели Ollama ('{LLM_MODEL}'): {e}")
-    print("Пожалуйста, убедитесь, что Ollama запущена и модель '{LLM_MODEL}' доступна.")
-    # Можно завершить выполнение или использовать заглушку
-    llm = None # Указываем, что LLM недоступна
-
-# Память для хранения истории диалога (последние K=5 пар сообщений)
-memory = ConversationBufferWindowMemory(
-    k=5,                # Количество запоминаемых пар сообщений (вопрос-ответ)
-    return_messages=True, # Возвращать историю как список сообщений
-    memory_key="history"  # Ключ для использования в промпте
-)
-
-# Промпт-шаблон: Инструкции для LLM
-system_message = """You are a helpful AI coding assistant powered by DeepSeek-coder. 
-Your goal is to assist users with programming tasks.
-You can write code, explain code snippets, find bugs, refactor code, and discuss programming concepts.
-If the user provides content from a file, use that content as context for their request.
-Format code blocks clearly using Markdown (e.g., ```python ... ```).
-Be concise and accurate in your responses."""
-
-prompt = ChatPromptTemplate.from_messages([
-    SystemMessagePromptTemplate.from_template(system_message), # Системное сообщение (инструкция)
-    MessagesPlaceholder(variable_name="history"),              # Место для вставки истории диалога
-    HumanMessagePromptTemplate.from_template("{input}")        # Место для вставки текущего запроса пользователя (+ контент файла)
-])
-
-# Цепочка LangChain: Связывает LLM, Промпт и Память
-if llm: # Создаем цепочку только если LLM доступна
-    chain = LLMChain(
-        llm=llm, 
-        prompt=prompt, 
-        memory=memory, 
-        verbose=True # Выводить подробную информацию о работе цепочки в консоль (полезно для отладки)
-    )
-else:
-    chain = None # Цепочка недоступна, если LLM не загрузилась
-
-# --- 2. Глобальные переменные для управления состоянием файла ---
-# В простом локальном приложении это допустимо.
-latest_file_content = None
-latest_file_name = None
-
-# --- 3. Функции для Gradio ---
-
-def handle_file_upload(file_obj):
+class ChatBotInterface:
     """
-    Обрабатывает загрузку файла пользователем.
-    Читает содержимое файла и сохраняет его в глобальные переменные.
-    Возвращает статусное сообщение для отображения пользователю.
+    Класс для создания веб-интерфейса чат-бота с использованием Gradio
     """
-    global latest_file_content, latest_file_name
-    if file_obj is not None:
+    
+    def __init__(self):
+        """
+        Инициализация интерфейса чат-бота
+        """
+        # Инициализация чат-бота
+        self.chatbot = CodeEnabledChatBot()
+        
+        # Флаг для отслеживания статуса инициализации Ollama
+        self.ollama_initialized = False
+        
+        # Создаем интерфейс
+        self.create_interface()
+    
+    def create_interface(self):
+        """
+        Создание веб-интерфейса с использованием Gradio
+        """
+        # Создаем тему
+        theme = gr.themes.Soft(
+            primary_hue="blue",
+            secondary_hue="indigo",
+        )
+        
+        # Создаем интерфейс
+        with gr.Blocks(title=config.GRADIO_TITLE, theme=theme) as self.interface:
+            # Заголовок
+            gr.Markdown(f"# {config.GRADIO_TITLE}")
+            gr.Markdown(config.GRADIO_DESCRIPTION)
+            
+            # Статус Ollama
+            with gr.Row():
+                self.status_box = gr.Textbox(
+                    label="Статус",
+                    value="Инициализация...",
+                    interactive=False
+                )
+                check_button = gr.Button("Проверить статус Ollama")
+            
+            # Чат
+            with gr.Row():
+                with gr.Column(scale=4):
+                    self.chatbot_ui = gr.Chatbot(
+                        label="Диалог",
+                        height=500,
+                        show_copy_button=True,
+                        show_share_button=False,
+                        avatar_images=("👤", "🤖")
+                    )
+                    
+                    with gr.Row():
+                        self.msg_box = gr.Textbox(
+                            label="Сообщение",
+                            placeholder="Введите ваш запрос здесь...",
+                            lines=3,
+                            max_lines=10,
+                            show_copy_button=True,
+                            container=False
+                        )
+                        self.submit_btn = gr.Button("Отправить", variant="primary")
+                    
+                    with gr.Row():
+                        clear_btn = gr.Button("Очистить чат")
+                        memory_clear_btn = gr.Button("Очистить память")
+                
+                # Панель файлов и кода
+                with gr.Column(scale=2):
+                    gr.Markdown("### Файлы с кодом")
+                    self.files_dropdown = gr.Dropdown(
+                        label="Выберите файл",
+                        choices=self.get_code_files(),
+                        interactive=True
+                    )
+                    
+                    with gr.Row():
+                        view_file_btn = gr.Button("Просмотреть")
+                        run_file_btn = gr.Button("Выполнить")
+                        delete_file_btn = gr.Button("Удалить")
+                    
+                    self.code_display = gr.Code(
+                        label="Код",
+                        language="python",
+                        value="# Здесь будет отображаться код",
+                        interactive=True,
+                        height=350
+                    )
+                    
+                    save_code_btn = gr.Button("Сохранить изменения")
+                    
+                    self.code_output = gr.Textbox(
+                        label="Результат выполнения",
+                        placeholder="Здесь будет отображаться результат выполнения кода",
+                        lines=5,
+                        max_lines=10,
+                        interactive=False
+                    )
+            
+            # Настройки модели
+            with gr.Accordion("Настройки модели", open=False):
+                with gr.Row():
+                    model_name = gr.Textbox(
+                        label="Название модели",
+                        value=config.MODEL_NAME,
+                        interactive=True
+                    )
+                    temperature_slider = gr.Slider(
+                        label="Температура",
+                        minimum=0.1,
+                        maximum=1.0,
+                        value=0.7,
+                        step=0.1
+                    )
+                
+                update_settings_btn = gr.Button("Обновить настройки")
+            
+            # Обработчики событий
+            
+            # Проверка статуса Ollama
+            check_button.click(
+                fn=self.check_ollama_status,
+                outputs=[self.status_box]
+            )
+            
+            # Отправка сообщения
+            self.submit_btn.click(
+                fn=self.chat,
+                inputs=[self.msg_box],
+                outputs=[self.chatbot_ui, self.msg_box, self.files_dropdown]
+            )
+            
+            # Отправка сообщения по нажатию Enter (с Shift+Enter для новой строки)
+            self.msg_box.submit(
+                fn=self.chat,
+                inputs=[self.msg_box],
+                outputs=[self.chatbot_ui, self.msg_box, self.files_dropdown]
+            )
+            
+            # Очистка чата
+            clear_btn.click(
+                fn=self.clear_chat,
+                outputs=[self.chatbot_ui]
+            )
+            
+            # Очистка памяти
+            memory_clear_btn.click(
+                fn=self.clear_memory,
+                outputs=[self.status_box]
+            )
+            
+            # Обновление списка файлов
+            self.files_dropdown.change(
+                fn=lambda x: x,
+                inputs=[self.files_dropdown],
+                outputs=[self.files_dropdown]
+            )
+            
+            # Просмотр файла
+            view_file_btn.click(
+                fn=self.view_file,
+                inputs=[self.files_dropdown],
+                outputs=[self.code_display]
+            )
+            
+            # Выполнение файла
+            run_file_btn.click(
+                fn=self.run_file,
+                inputs=[self.files_dropdown],
+                outputs=[self.code_output]
+            )
+            
+            # Удаление файла
+            delete_file_btn.click(
+                fn=self.delete_file,
+                inputs=[self.files_dropdown],
+                outputs=[self.files_dropdown, self.status_box]
+            )
+            
+            # Сохранение изменений в коде
+            save_code_btn.click(
+                fn=self.save_code,
+                inputs=[self.files_dropdown, self.code_display],
+                outputs=[self.status_box]
+            )
+            
+            # Обновление настроек модели
+            update_settings_btn.click(
+                fn=self.update_settings,
+                inputs=[model_name, temperature_slider],
+                outputs=[self.status_box]
+            )
+            
+            # Инициализация при запуске
+            self.interface.load(
+                fn=self.initialize,
+                outputs=[self.status_box]
+            )
+    
+    def initialize(self):
+        """
+        Инициализация чат-бота при запуске интерфейса
+        
+        Returns:
+            str: Статус инициализации
+        """
         try:
-            # file_obj в Gradio - это временный файл. Используем его имя.
-            filepath = file_obj.name 
-            filename = os.path.basename(filepath) # Получаем только имя файла
-            
-            # Читаем содержимое файла
-            with open(filepath, 'r', encoding='utf-8') as f:
-                latest_file_content = f.read()
-            latest_file_name = filename
-            
-            print(f"Файл '{latest_file_name}' успешно загружен. Размер: {len(latest_file_content)} байт.")
-            # Предупреждение о размере файла (токены LLM ограничены)
-            if len(latest_file_content) > 10000: # Примерный порог
-                 return f"⚠️ Файл '{latest_file_name}' загружен, но он очень большой. Модель может не обработать весь контент."
-            return f"✅ Файл '{latest_file_name}' загружен. Теперь вы можете задавать вопросы по его содержимому."
-            
+            # Проверяем доступность Ollama
+            if self.chatbot.ollama_client.check_model_availability():
+                self.ollama_initialized = True
+                return "✅ Ollama запущена, модель готова к использованию"
+            else:
+                return "⚠️ Ollama запущена, но модель не найдена. Используйте 'Проверить статус Ollama' для загрузки модели."
         except Exception as e:
-            print(f"Ошибка чтения файла '{filepath}': {e}")
-            latest_file_content = None
-            latest_file_name = None
-            return f"❌ Ошибка при чтении файла: {e}"
-    else:
-        # Если пользователь отменил выбор файла
-        latest_file_content = None
-        latest_file_name = None
-        return "Файл не выбран или очищен."
-
-
-def chat_logic(message, chat_history):
-    """
-    Основная логика чата. Вызывается при отправке сообщения пользователем.
-    Формирует вход для LangChain, вызывает цепочку и возвращает ответ.
-    """
-    global latest_file_content, latest_file_name
+            return f"❌ Ошибка при инициализации: {str(e)}"
     
-    print(f"\n--- Новый запрос ---")
-    print(f"Пользователь: {message}")
-    print(f"История до запроса: {chat_history}") # История передается Gradio
-
-    # Проверяем, доступна ли LLM
-    if not chain:
-        return "Ошибка: Модель LLM не инициализирована. Проверьте запуск Ollama и доступность модели."
-
-    input_for_chain = message
-    
-    # Если есть контент загруженного файла, добавляем его в начало запроса
-    if latest_file_content:
-        print(f"Добавляем контекст из файла: {latest_file_name}")
-        file_context = f"Context from file '{latest_file_name}':\n```\n{latest_file_content}\n```\n\n"
-        input_for_chain = file_context + f"User query: {message}"
-        # Важно: Решите, нужно ли очищать файл после каждого использования.
-        # Если оставить, он будет добавляться ко всем последующим запросам, пока не будет загружен новый файл или не нажата кнопка "Очистить".
-        # Если раскомментировать строки ниже, файл будет использоваться только один раз:
-        # latest_file_content = None 
-        # latest_file_name = None
-        # print("Контекст файла использован и очищен для следующего запроса.")
-        
-    print(f"Полный вход для LLMChain:\n{input_for_chain[:500]}...") # Показываем начало входа для отладки
-
-    try:
-        # Вызываем цепочку LangChain (которая включает LLM и память)
-        # .invoke ожидает словарь и возвращает словарь
-        response = chain.invoke({"input": input_for_chain}) 
-        bot_response = response['text'] # Извлекаем текст ответа
-        print(f"Ответ LLM: {bot_response}")
-        
-    except Exception as e:
-        print(f"Ошибка при вызове LLMChain: {e}")
-        bot_response = f"Произошла ошибка при обработке вашего запроса: {e}"
-
-    # Добавляем пару (запрос, ответ) в историю Gradio
-    # chat_history.append((message, bot_response)) # Gradio сделает это автоматически
-    
-    # Имитация "печати" для лучшего UX
-    # for i in range(len(bot_response)):
-    #     time.sleep(0.01)
-    #     yield bot_response[:i+1]
-        
-    return bot_response # Возвращаем только ответ бота
-
-
-def clear_chat_and_memory():
-    """
-    Очищает историю чата в Gradio, память LangChain и сбрасывает загруженный файл.
-    """
-    global latest_file_content, latest_file_name
-    
-    # Очистка памяти LangChain
-    memory.clear() 
-    
-    # Сброс глобальных переменных файла
-    latest_file_content = None 
-    latest_file_name = None
-    
-    print("История чата, память LangChain и контекст файла очищены.")
-    # Возвращаем пустую историю для Chatbot и пустую строку для Textbox + статус
-    return [], "", "История и память очищены."
-
-# --- 4. Создание интерфейса Gradio ---
-
-with gr.Blocks(theme=gr.themes.Soft()) as demo: # Используем тему для лучшего вида
-    gr.Markdown(
+    def check_ollama_status(self):
         """
-        # 🤖 Локальный Помощник по Коду (DeepSeek-coder + Ollama)
-        Задавайте вопросы по программированию, вставляйте код или загружайте файлы для анализа.
+        Проверка статуса Ollama и модели
+        
+        Returns:
+            str: Статус Ollama и модели
         """
-    )
-    
-    # Основной компонент чата
-    chatbot = gr.Chatbot(
-        label="Диалог", 
-        bubble_full_width=False, # Пузыри сообщений не на всю ширину
-        height=500 # Высота области чата
-        ) 
-
-    with gr.Row(): # Располагаем элементы в ряд
-        # Поле для ввода текста пользователя
-        msg_textbox = gr.Textbox(
-            label="Ваш запрос:",
-            placeholder="Напишите ваш вопрос или вставьте код здесь...",
-            lines=3, # Несколько строк для удобства ввода кода
-            scale=7 # Занимает большую часть ряда
-            )
-        # Компонент для загрузки файла
-        file_upload_button = gr.UploadButton(
-                "📁 Загрузить файл", 
-                file_types=['.py', '.txt', '.md', '.json', '.csv', '.html', '.css', '.js', '.java', '.c', '.cpp', '.h', '.hpp', '.rs', '.go', '.php'], # Укажите нужные типы
-                scale=1 # Занимает меньшую часть ряда
-            )
+        try:
+            # Проверяем доступность Ollama
+            models = self.chatbot.ollama_client.list_models()
             
-    # Кнопка "Очистить диалог"
-    clear_button = gr.Button("🧹 Очистить диалог и память")
+            # Проверяем наличие нужной модели
+            model_available = any(model['name'] == config.MODEL_NAME for model in models)
+            
+            if model_available:
+                self.ollama_initialized = True
+                return f"✅ Ollama запущена, модель {config.MODEL_NAME} готова к использованию"
+            else:
+                # Предлагаем загрузить модель
+                try:
+                    self.chatbot.ollama_client.pull_model()
+                    self.ollama_initialized = True
+                    return f"✅ Модель {config.MODEL_NAME} успешно загружена и готова к использованию"
+                except Exception as e:
+                    return f"⚠️ Не удалось загрузить модель: {str(e)}"
+        except Exception as e:
+            return f"❌ Ошибка при проверке статуса Ollama: {str(e)}"
     
-    # Статусная строка для сообщений (например, об успешной загрузке файла)
-    status_display = gr.Markdown("") # Используем Markdown для возможного форматирования
+    def chat(self, message):
+        """
+        Обработка сообщения пользователя
+        
+        Args:
+            message: Сообщение пользователя
+            
+        Returns:
+            tuple: (обновленный чат, пустое поле ввода, обновленный список файлов)
+        """
+        # Проверяем, что сообщение не пустое
+        if not message or message.strip() == "":
+            return self.chatbot_ui, "", self.get_code_files()
+        
+        # Проверяем инициализацию Ollama
+        if not self.ollama_initialized:
+            status = self.check_ollama_status()
+            if not self.ollama_initialized:
+                self.chatbot_ui.append((message, f"⚠️ Ollama не инициализирована. {status}"))
+                return self.chatbot_ui, "", self.get_code_files()
+        
+        # Получаем ответ от чат-бота
+        try:
+            response = self.chatbot.get_chat_response(message)
+            
+            # Добавляем сообщение и ответ в интерфейс
+            self.chatbot_ui.append((message, response))
+            
+            # Обновляем список файлов
+            files = self.get_code_files()
+            
+            return self.chatbot_ui, "", files
+        except Exception as e:
+            error_message = f"❌ Произошла ошибка: {str(e)}"
+            self.chatbot_ui.append((message, error_message))
+            return self.chatbot_ui, "", self.get_code_files()
+    
+    def clear_chat(self):
+        """
+        Очистка чата
+        
+        Returns:
+            list: Пустой список сообщений
+        """
+        return []
+    
+    def clear_memory(self):
+        """
+        Очистка памяти чат-бота
+        
+        Returns:
+            str: Статус операции
+        """
+        try:
+            self.chatbot.clear_memory()
+            return "✅ Память успешно очищена"
+        except Exception as e:
+            return f"❌ Ошибка при очистке памяти: {str(e)}"
+    
+    def get_code_files(self):
+        """
+        Получение списка файлов с кодом
+        
+        Returns:
+            list: Список имен файлов
+        """
+        try:
+            return self.chatbot.code_manager.list_code_files()
+        except Exception:
+            return []
+    
+    def view_file(self, file_name):
+        """
+        Просмотр содержимого файла
+        
+        Args:
+            file_name: Имя файла
+            
+        Returns:
+            str: Содержимое файла
+        """
+        if not file_name:
+            return "# Выберите файл для просмотра"
+        
+        try:
+            content = self.chatbot.code_manager.read_code_from_file(file_name)
+            return content
+        except Exception as e:
+            return f"# Ошибка при чтении файла: {str(e)}"
+    
+    def run_file(self, file_name):
+        """
+        Выполнение кода из файла
+        
+        Args:
+            file_name: Имя файла
+            
+        Returns:
+            str: Результат выполнения
+        """
+        if not file_name:
+            return "Выберите файл для выполнения"
+        
+        try:
+            # Определяем язык по расширению файла
+            language = file_name.split('.')[-1] if '.' in file_name else "python"
+            
+            # Читаем код из файла
+            code = self.chatbot.code_manager.read_code_from_file(file_name)
+            
+            # Выполняем код
+            result = self.chatbot.code_manager.execute_code(code, language)
+            
+            return result
+        except Exception as e:
+            return f"Ошибка при выполнении файла: {str(e)}"
+    
+    def delete_file(self, file_name):
+        """
+        Удаление файла
+        
+        Args:
+            file_name: Имя файла
+            
+        Returns:
+            tuple: (обновленный список файлов, статус операции)
+        """
+        if not file_name:
+            return self.get_code_files(), "Выберите файл для удаления"
+        
+        try:
+            success = self.chatbot.code_manager.delete_code_file(file_name)
+            
+            if success:
+                return self.get_code_files(), f"✅ Файл {file_name} успешно удален"
+            else:
+                return self.get_code_files(), f"❌ Файл {file_name} не найден"
+        except Exception as e:
+            return self.get_code_files(), f"❌ Ошибка при удалении файла: {str(e)}"
+    
+    def save_code(self, file_name, code):
+        """
+        Сохранение изменений в коде
+        
+        Args:
+            file_name: Имя файла
+            code: Новое содержимое файла
+            
+        Returns:
+            str: Статус операции
+        """
+        if not file_name:
+            return "Выберите файл для сохранения"
+        
+        try:
+            self.chatbot.code_manager.save_code_to_file(code, file_name)
+            return f"✅ Файл {file_name} успешно сохранен"
+        except Exception as e:
+            return f"❌ Ошибка при сохранении файла: {str(e)}"
+    
+    def update_settings(self, model_name, temperature):
+        """
+        Обновление настроек модели
+        
+        Args:
+            model_name: Название модели
+            temperature: Температура генерации
+            
+        Returns:
+            str: Статус операции
+        """
+        try:
+            # Обновляем название модели
+            if model_name != config.MODEL_NAME:
+                config.MODEL_NAME = model_name
+                self.chatbot.ollama_client.model_name = model_name
+                self.ollama_initialized = False  # Требуется повторная инициализация
+            
+            # Обновляем температуру (для будущих запросов)
+            # Здесь можно добавить сохранение температуры в конфигурацию
+            
+            return f"✅ Настройки обновлены: модель={model_name}, температура={temperature}"
+        except Exception as e:
+            return f"❌ Ошибка при обновлении настроек: {str(e)}"
+    
+    def launch(self, share=False):
+        """
+        Запуск веб-интерфейса
+        
+        Args:
+            share: Флаг для создания публичной ссылки
+        """
+        self.interface.launch(share=share)
 
-    # --- Связывание компонентов ---
 
-    # 1. Обработка отправки сообщения (нажатие Enter в Textbox или клик по невидимой кнопке отправки)
-    msg_textbox.submit(
-        chat_logic,                 # Функция-обработчик
-        [msg_textbox, chatbot],     # Входные данные: текущее сообщение и история чата
-        [chatbot]                   # Выходные данные: обновленная история чата
-    ).then(lambda: "", None, [msg_textbox]) # Очищаем текстовое поле после отправки
-
-    # 2. Обработка загрузки файла
-    file_upload_button.upload(
-        handle_file_upload,         # Функция-обработчик
-        [file_upload_button],       # Входные данные: объект загруженного файла
-        [status_display]            # Выходные данные: сообщение о статусе загрузки
-    )
-
-    # 3. Обработка нажатия кнопки "Очистить"
-    clear_button.click(
-        clear_chat_and_memory,      # Функция-обработчик
-        [],                         # Нет входных данных
-        [chatbot, msg_textbox, status_display] # Выходные данные: очищенный чат, пустое поле ввода, сообщение о статусе
-    )
-
-# --- 5. Запуск приложения ---
 if __name__ == "__main__":
-    print("Запуск Gradio приложения...")
-    if not llm or not chain:
-         print("\n*** ПРЕДУПРЕЖДЕНИЕ: LLM или LangChain не инициализированы! Функциональность будет ограничена. ***\n")
-    
-    # Запуск веб-сервера Gradio
-    demo.launch(server_name="0.0.0.0") # Доступно в локальной сети, используйте "127.0.0.1" только для локального доступа
-    # demo.launch() # Только локальный доступ по умолчанию
-```
-
-**Как использовать:**
-
-1.  Сохраните код выше как `app.py`.
-2.  Откройте терминал или командную строку.
-3.  Перейдите в каталог, где сохранили `app.py`.
-4.  Убедитесь, что Ollama запущена и модель `deepseek-coder` доступна.
-5.  Выполните команду: `python app.py`
-6.  В терминале появится URL-адрес (обычно `http://127.0.0.1:7860` или `http://0.0.0.0:7860`). Откройте его в вашем веб-браузере.
-7.  Пользуйтесь чат-ботом! Вы можете писать запросы, загружать файлы и очищать историю.
-
-Этот код предоставляет полнофункциональную основу. Вы можете дальше его дорабатывать, например, улучшать обработку ошибок, добавлять более сложную логику работы с файлами или настраивать внешний вид Grad
+    # Создаем и запускаем интерфейс
+    interface = ChatBotInterface()
+    interface.launch()
