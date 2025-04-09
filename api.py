@@ -1,5 +1,5 @@
 """
-API для интеграции с внешними фронтендами
+API для интеграции Elcoder с внешними фронтендами
 """
 
 from fastapi import FastAPI, HTTPException, Depends, Body
@@ -27,8 +27,8 @@ logger = logging.getLogger(__name__)
 
 # Создаем экземпляр FastAPI
 app = FastAPI(
-    title="Coding ChatBot API",
-    description="API для локального чат-бота на основе DeepSeek-coder",
+    title="Elcoder API",
+    description="API для Elcoder - локального чат-бота для кодинга на основе DeepSeek-coder",
     version="1.0.0"
 )
 
@@ -91,7 +91,7 @@ async def root():
 @app.post("/chat", response_model=ChatResponse)
 async def chat(request: ChatRequest):
     """
-    Отправить сообщение в чат и получить ответ модели
+    Отправить сообщение в чат и получить ответ Elcoder
     """
     try:
         logger.info(f"Получен запрос чата: {request.message[:50]}...")
@@ -175,6 +175,18 @@ async def execute_code(request: ExecuteCodeRequest):
         logger.error(f"Ошибка при выполнении кода: {str(e)}")
         raise HTTPException(status_code=500, detail=str(e))
 
+@app.post("/export", status_code=200)
+async def export_session(format: str = "markdown"):
+    """
+    Экспортировать текущую сессию
+    """
+    try:
+        file_path = bot.export_session(format)
+        return {"file_path": file_path}
+    except Exception as e:
+        logger.error(f"Ошибка при экспорте сессии: {str(e)}")
+        raise HTTPException(status_code=500, detail=str(e))
+
 @app.get("/health")
 async def health_check():
     """
@@ -198,8 +210,19 @@ def start_api(host: str = "127.0.0.1", port: int = 8000):
     """
     Запустить API сервер
     """
+    logger.info(f"Запуск API сервера Elcoder на {host}:{port}")
     uvicorn.run(app, host=host, port=port)
 
 if __name__ == "__main__":
+    print("""
+    ███████╗██╗      ██████╗ ██████╗ ██████╗ ███████╗██████╗     █████╗ ██████╗ ██╗
+    ██╔════╝██║     ██╔════╝██╔═══██╗██╔══██╗██╔════╝██╔══██╗   ██╔══██╗██╔══██╗██║
+    █████╗  ██║     ██║     ██║   ██║██║  ██║█████╗  ██████╔╝   ███████║██████╔╝██║
+    ██╔══╝  ██║     ██║     ██║   ██║██║  ██║██╔══╝  ██╔══██╗   ██╔══██║██╔═══╝ ██║
+    ███████╗███████╗╚██████╗╚██████╔╝██████╔╝███████╗██║  ██║██╗██║  ██║██║     ██║
+    ╚══════╝╚══════╝ ╚═════╝ ╚═════╝ ╚═════╝ ╚══════╝╚═╝  ╚═╝╚═╝╚═╝  ╚═╝╚═╝     ╚═╝
+    
+    API сервер для Elcoder
+    """)
     # Запуск API сервера
-    start_api()
+    start_api(host=config.SERVER_HOST, port=8000)
