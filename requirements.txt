@@ -1,5 +1,4 @@
-gradio
-langchain
-langchain-community
-ollama
-# python-dotenv # Раскомментируйте, если используете .env файлы для конфигурации
+gradio>=4.0.0
+langchain>=0.0.267
+pydantic>=2.0.0
+python-dotenv>=1.0.0
