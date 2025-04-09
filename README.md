@@ -26,8 +26,8 @@
 1.  **Клонируйте репозиторий:**
     ```bash
     # ЗАМЕНИТЕ URL НА АКТУАЛЬНЫЙ!
-    git clone [https://github.com/your_username/elcoder_assistant.git](https://github.com/your_username/elcoder_assistant.git)
-    cd elcoder_assistant 
+    git clone https://github.com/Elguajo/Elcoder.git
+    cd Elcoder
     ```
 
 2.  **Создайте и активируйте виртуальное окружение:**
@@ -53,7 +53,7 @@
     * Запустите приложение Ollama или выполните `ollama serve` в терминале.
 
 2.  **Запустите Elcoder:**
-    * Находясь в папке проекта (`elcoder_assistant`) с активным виртуальным окружением, выполните:
+    * Находясь в папке проекта (`elcoder`) с активным виртуальным окружением, выполните:
         ```bash
         python app.py
         ```
